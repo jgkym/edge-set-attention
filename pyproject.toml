@@ -15,6 +15,7 @@ dependencies = [
     "pre-commit>=4.2.0",
     "pydantic>=2.11.7",
     "rdkit>=2025.3.3",
+    "rich>=14.1.0",
     "ruff>=0.12.4",
     "scikit-learn>=1.7.1",
     "torch>=2.7.1",
