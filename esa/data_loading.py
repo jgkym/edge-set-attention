@@ -68,24 +68,6 @@ def load_molecule_dataset(
 
     print("\nDataset items look like: ", dataset[0])
 
-    max_edge_global, max_node_global = get_max_node_edge_global(dataset)
-
-    print(f"Datasets has {len(dataset)} elements")
-    print(f"Maximum number of nodes per graph in dataset = {max_node_global}")
-    print(f"Maximum number of edges per graph in dataset = {max_edge_global}")
-
-    dataset.max_node_global = max_node_global
-    dataset.max_edge_global = max_edge_global
-
-    print("Applying global node/edge count transforms...")
-    global_transforms = T.Compose(
-        [
-            AddMaxNodeGlobal(max_node_global),
-            AddMaxEdgeGlobal(max_edge_global),
-        ]
-    )
-    dataset.transform = global_transforms
-
     node_dim, edge_dim = dataset.x.shape[1], dataset.edge_attr.shape[1]
     print(f"Node feature dimension: {node_dim}")
     print(f"Edge feature dimension: {edge_dim}")

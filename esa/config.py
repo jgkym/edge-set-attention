@@ -1,6 +1,7 @@
-import torch.nn as nn
 from pathlib import Path
 from typing import Literal, Type
+
+import torch.nn as nn
 from pydantic import BaseModel, Field
 
 # A map to resolve activation function from a string representation
@@ -16,17 +17,17 @@ class EmbeddingConfig(BaseModel):
 
     node_dim: int = 61
     edge_dim: int = 13
-    hidden_dims: list[int] = Field(default_factory=lambda: [512])
+    hidden_dims: list[int] = Field(default_factory=lambda: [128])
 
 
 class ESAConfig(BaseModel):
     """Configuration for the Edge-Set Attention block."""
 
     num_heads: int = 4
-    mlp_hidden_dims: list[int] = Field(default_factory=lambda: [256])
-    num_seeds: int = 64
+    mlp_hidden_dims: list[int] = Field(default_factory=lambda: [128])
+    num_seeds: int = 32
     blocks: Literal["M", "P", "S"] = (
-        "P"  # Using str for flexibility, can be validated with pydantic
+        "MMP"  # Using str for flexibility, can be validated with pydantic
     )
 
 
@@ -67,13 +68,13 @@ class TrainingConfig(BaseModel):
     """Configuration for training."""
 
     batch_size: int = 32
-    epochs: int = 20
+    epochs: int = 200
 
     # --- Optimizer ---
     learning_rate: float = 1e-4
     weight_decay: float = 1e-4
     gradient_accumulation_steps: int = 2
-    early_stopping_patience: int = 20
+    early_stopping_patience: int = 30
 
     # --- Logging ---
     report_to: str = "trackio"
@@ -82,13 +83,14 @@ class TrainingConfig(BaseModel):
 
     # --- Saving ---
     output_dir: Path = Path("outputs")
-    metric_for_best_model: str = "score"
-    greater_is_better: bool = True
+    metric_for_best_model: str = "loss"
+    greater_is_better: bool = False
+
 
 class AppConfig(BaseModel):
     """Base configuration for the project."""
 
-    random_seed: int = 0
+    random_seed: int = 7
     data: DataConfig = Field(default_factory=DataConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
     training: TrainingConfig = Field(default_factory=TrainingConfig)

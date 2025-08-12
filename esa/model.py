@@ -91,7 +91,18 @@ class MoleculePropertyPredictor(nn.Module):
         Returns:
             A tensor of predictions.
         """
-        max_num_edges = data.max_edge_global.max().item()
+        # Determine the maximum number of edges in the batch, which is required
+        # for creating a dense tensor from the sparse graph data.
+        edge_batch_index = data.batch.index_select(0, data.edge_index[0])
+        edge_counts = torch.bincount(edge_batch_index)
+
+        # Pad edge_counts to ensure it matches the batch size, even if some graphs have no edges.
+        num_graphs = data.num_graphs
+        if edge_counts.numel() < num_graphs:
+            padding = edge_counts.new_zeros(num_graphs - edge_counts.numel())
+            edge_counts = torch.cat([edge_counts, padding], dim=0)
+
+        max_num_edges = max(1, int(edge_counts.max()) if len(edge_counts) > 0 else 0)
 
         data.x = data.x.float()
 

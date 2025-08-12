@@ -28,7 +28,6 @@ class Trainer:
         model: nn.Module,
         train_loader: DataLoader,
         val_loader: DataLoader = None,
-        test_loader: DataLoader = None,
     ) -> None:
         self.config = config
 
