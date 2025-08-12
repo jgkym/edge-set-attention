@@ -15,7 +15,7 @@ def main():
     set_seed(config.random_seed)
 
     # --- Load data ---
-    train, val, test, node_dim, edge_dim = load_molecule_dataset(
+    train, val, node_dim, edge_dim = load_molecule_dataset(
         data_dir=config.data.data_dir,
         filename=config.data.filename,
         smiles_col=config.data.smiles_col,
@@ -39,12 +39,6 @@ def main():
         shuffle=False,
         drop_last=True,
     )
-    test_loader = DataLoader(
-        test,
-        batch_size=config.training.batch_size,
-        shuffle=False,
-        drop_last=True,
-    )
 
     # --- Instantiate model and trainer ---
     config.model.embedding.node_dim = node_dim
@@ -55,7 +49,6 @@ def main():
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
-        test_loader=test_loader,
     )
 
     # --- Train the model ---

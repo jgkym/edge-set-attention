@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import Literal
 
 import torch
 import torch.nn as nn
@@ -54,7 +53,7 @@ class Trainer:
             weight_decay=config.weight_decay,
         )
         scheduler = CosineAnnealingLR(optimizer, T_max=config.epochs)
-        self.criterion = nn.HuberLoss()
+        self.criterion = nn.MSELoss()
 
         # --- Prepare everything with Accelerator ---
         (
@@ -62,10 +61,9 @@ class Trainer:
             self.optimizer,
             self.train_loader,
             self.val_loader,
-            self.test_loader,
             self.scheduler,
         ) = self.accelerator.prepare(
-            model, optimizer, train_loader, val_loader, test_loader, scheduler
+            model, optimizer, train_loader, val_loader, scheduler
         )
 
         # --- State Tracking & Early Stopping ---
@@ -115,9 +113,7 @@ class Trainer:
 
                 eval_metrics = {}
                 if self.val_loader:
-                    eval_metrics.update(self._evaluate("val", progress))
-                if self.test_loader:
-                    eval_metrics.update(self._evaluate("test", progress))
+                    eval_metrics.update(self._evaluate("val/", progress))
 
                 self.scheduler.step()
                 log_metrics = {**train_metrics, **eval_metrics, "epoch": epoch + 1}
@@ -191,11 +187,11 @@ class Trainer:
         return {k: v.item() if hasattr(v, "item") else v for k, v in metrics.items()}
 
     def _evaluate(
-        self, state: Literal["val", "test"], progress: Progress | None
+        self, prefix: str = "val/", progress: Progress | None = None
     ) -> dict[str, float]:
         """Runs a single evaluation epoch."""
         self.model.eval()
-        loader = self.val_loader if state == "val" else self.test_loader
+        loader = self.val_loader
         if not loader:
             return {}
 
@@ -204,9 +200,7 @@ class Trainer:
 
         task_id = None
         if progress:
-            task_id = progress.add_task(
-                f"[purple]Evaluating ({state})", total=len(loader)
-            )
+            task_id = progress.add_task("[purple]Evaluating", total=len(loader))
 
         with torch.no_grad():
             for inputs in loader:
@@ -223,7 +217,7 @@ class Trainer:
                     progress.update(
                         task_id,
                         advance=1,
-                        description=f"[purple]Evaluating ({state}) | Loss: {avg_loss.item():.4f}",
+                        description=f"[purple]Evaluating | Loss: {avg_loss.item():.4f}",
                     )
 
         if progress:
@@ -232,7 +226,6 @@ class Trainer:
         gathered_preds = self.accelerator.gather_for_metrics(torch.cat(all_preds))
         gathered_targets = self.accelerator.gather_for_metrics(torch.cat(all_targets))
 
-        prefix = f"{state}/"
         metrics = compute_metrics(gathered_preds, gathered_targets, prefix=prefix)
         metrics[f"{prefix}loss"] = total_loss / len(loader)
         return {k: v.item() if hasattr(v, "item") else v for k, v in metrics.items()}

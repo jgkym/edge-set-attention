@@ -3,7 +3,6 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch_geometric.transforms as T
-from sklearn.preprocessing import QuantileTransformer
 from tqdm.auto import tqdm
 
 from esa.dataset import MolecularGraphPyGDataset
@@ -98,20 +97,15 @@ def load_molecule_dataset(
     indices = np.arange(len(dataset))
     np.random.shuffle(indices)
     train_idx = indices[: int(train_ratio * len(dataset))]
-    val_idx = indices[
-        int(train_ratio * len(dataset)) : int((train_ratio + 1) * 0.5 * len(dataset))
-    ]
-    test_idx = indices[int((train_ratio + 1) * 0.5 * len(dataset)) :]
+    val_idx = indices[int(train_ratio * len(dataset)) :]
 
     train_dataset = dataset.index_select(torch.from_numpy(train_idx))
     val_dataset = dataset.index_select(torch.from_numpy(val_idx))
-    test_dataset = dataset.index_select(torch.from_numpy(test_idx))
 
     print(f"Original dataset size: {len(dataset)}")
     print(f"Training set size: {len(train_dataset)}")
     print(f"Validation set size: {len(val_dataset)}")
-    print(f"Test set size: {len(test_dataset)}")
 
     print("Finished loading data!")
 
-    return train_dataset, val_dataset, test_dataset, node_dim, edge_dim
+    return train_dataset, val_dataset, node_dim, edge_dim
