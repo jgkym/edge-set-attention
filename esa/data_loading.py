@@ -75,12 +75,17 @@ def load_molecule_dataset(
     print(f"Maximum number of nodes per graph in dataset = {max_node_global}")
     print(f"Maximum number of edges per graph in dataset = {max_edge_global}")
 
-    # global_transforms = T.Compose(
-    #     [AddMaxEdgeGlobal(max_edge_global), AddMaxNodeGlobal(max_node_global)]
-    # )
+    dataset.max_node_global = max_node_global
+    dataset.max_edge_global = max_edge_global
 
-    # print("Applying global node/edge count transforms...")
-    # dataset = [global_transforms(data) for data in tqdm(dataset)]
+    print("Applying global node/edge count transforms...")
+    global_transforms = T.Compose(
+        [
+            AddMaxNodeGlobal(max_node_global),
+            AddMaxEdgeGlobal(max_edge_global),
+        ]
+    )
+    dataset.transform = global_transforms
 
     node_dim, edge_dim = dataset.x.shape[1], dataset.edge_attr.shape[1]
     print(f"Node feature dimension: {node_dim}")
@@ -93,15 +98,20 @@ def load_molecule_dataset(
     indices = np.arange(len(dataset))
     np.random.shuffle(indices)
     train_idx = indices[: int(train_ratio * len(dataset))]
-    val_idx = indices[int(train_ratio * len(dataset)) :]
+    val_idx = indices[
+        int(train_ratio * len(dataset)) : int((train_ratio + 1) * 0.5 * len(dataset))
+    ]
+    test_idx = indices[int((train_ratio + 1) * 0.5 * len(dataset)) :]
 
     train_dataset = dataset.index_select(torch.from_numpy(train_idx))
     val_dataset = dataset.index_select(torch.from_numpy(val_idx))
+    test_dataset = dataset.index_select(torch.from_numpy(test_idx))
 
     print(f"Original dataset size: {len(dataset)}")
     print(f"Training set size: {len(train_dataset)}")
     print(f"Validation set size: {len(val_dataset)}")
+    print(f"Test set size: {len(test_dataset)}")
 
     print("Finished loading data!")
 
-    return train_dataset, val_dataset, node_dim, edge_dim
+    return train_dataset, val_dataset, test_dataset, node_dim, edge_dim
