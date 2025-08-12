@@ -1,13 +1,23 @@
 from pathlib import Path
+from typing import Literal
 
 import torch
 import torch.nn as nn
 from accelerate import Accelerator
-from accelerate.utils import TorchDynamoPlugin
+from rich.console import Console
+from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
+from rich.table import Table
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 from esa.metrics import compute_metrics
 
@@ -19,33 +29,23 @@ class Trainer:
         model: nn.Module,
         train_loader: DataLoader,
         val_loader: DataLoader = None,
+        test_loader: DataLoader = None,
     ) -> None:
         self.config = config
 
         # --- Accelerator ---
-        # Initialize accelerator first. It will handle device placement, model wrapping, etc.
-        # Configure TorchDynamoPlugin for torch.compile if available
-        # torch_dynamo_plugin = (
-        #     TorchDynamoPlugin(
-        #         backend="inductor",
-        #         mode="max-autotune",
-        #         use_regional_compilation=True,
-        #     )
-        #     if hasattr(torch, "compile")
-        #     else None
-        # )
-
         self.accelerator = Accelerator(
             log_with=config.report_to,
-            # mixed_precision="fp16",  # Use "bf16" on A100/H100, "fp16" on others
             gradient_accumulation_steps=config.gradient_accumulation_steps,
-            # dynamo_plugin=torch_dynamo_plugin,
         )
         self.device = self.accelerator.device
 
-        print("Starting Training...")
-        # Let accelerate handle the device printing
-        self.accelerator.print(f"Using device: {self.accelerator.device}")
+        # --- Rich Console for Pretty Logging (Main Process Only) ---
+        self.console = Console() if self.accelerator.is_main_process else None
+
+        if self.console:
+            self.console.print("[bold green]Starting Training...[/bold green]")
+            self.console.print(f"Using device: {self.accelerator.device}")
 
         # --- Optimizer, Scheduler, and Loss ---
         optimizer = AdamW(
@@ -53,10 +53,7 @@ class Trainer:
             lr=config.learning_rate,
             weight_decay=config.weight_decay,
         )
-        scheduler = CosineAnnealingLR(
-            optimizer,
-            T_max=config.epochs,
-        )
+        scheduler = CosineAnnealingLR(optimizer, T_max=config.epochs)
         self.criterion = nn.HuberLoss()
 
         # --- Prepare everything with Accelerator ---
@@ -65,179 +62,234 @@ class Trainer:
             self.optimizer,
             self.train_loader,
             self.val_loader,
+            self.test_loader,
             self.scheduler,
         ) = self.accelerator.prepare(
-            model, optimizer, train_loader, val_loader, scheduler
+            model, optimizer, train_loader, val_loader, test_loader, scheduler
         )
 
         # --- State Tracking & Early Stopping ---
-        self.best_loss = float("inf")
+        self.best_metric = float("-inf") if config.greater_is_better else float("inf")
         self.early_stopping_patience = config.early_stopping_patience
         self.patience_counter = 0
 
         # --- Output & Logging ---
         if self.accelerator.is_main_process and config.report_to is not None:
-            self.accelerator.init_trackers(project_name="ESA", config=vars(config))
+            self.accelerator.init_trackers(
+                project_name=config.project_name, config=vars(config)
+            )
 
         self.output_dir = Path(config.output_dir)
-        # Let the main process create the directory
         if self.accelerator.is_main_process:
             self.output_dir.mkdir(parents=True, exist_ok=True)
         self.best_model_path = self.output_dir / "best_model_state"
 
-        # Check if torch.compile is being used, for conditional optimizations
-        self.use_torch_compile = (
-            self.accelerator.state.dynamo_plugin is not None
-            and hasattr(torch, "compile")
-        )
-
     def train(self) -> Path:
         """
         Main training loop. Handles training, validation, model saving, and early stopping.
-
-        Returns:
-            Path: The path to the best saved model checkpoint directory.
         """
-        for epoch in range(self.config.epochs):
-            train_metrics = self._train_epoch(epoch)
-            train_loss = train_metrics["loss"]
-            log_metrics = {
-                "epoch": epoch + 1,
-                "train_loss": train_loss,
-                "train_score": train_metrics["score"],
-                "train_nrmse": train_metrics["nrmse"],
-                "train_r2": train_metrics["r2"],
-            }
+        progress = None
+        if self.console:
+            progress_columns = [
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                TimeRemainingColumn(),
+                TimeElapsedColumn(),
+            ]
+            progress = Progress(*progress_columns, console=self.console)
 
-            log_message = f"Epoch {epoch + 1}/{self.config.epochs}\nTrain Loss: {train_loss:.4f} | Train Score: {train_metrics['score']:.4f} | Train NRMSE: {train_metrics['nrmse']:.4f} | Train R2: {train_metrics['r2']:.4f}"
+        try:
+            if progress:
+                progress.start()
 
-            # Determine loss for early stopping and logging
-            if self.val_loader:
-                eval_metrics = self._evaluate()
-                current_loss = eval_metrics["loss"]
-                log_metrics.update(eval_metrics)
-                log_message += f"\nVal Loss: {eval_metrics['loss']:.4f} | Val Score: {eval_metrics['score']:.4f} | Val NRMSE: {eval_metrics['nrmse']:.4f} | Val R2: {eval_metrics['r2']:.4f}"
-            else:
-                current_loss = train_loss
+            epochs_task = None
+            if progress:
+                epochs_task = progress.add_task(
+                    "[cyan]Epochs", total=self.config.epochs
+                )
 
-            # Scheduler should be stepped once per epoch
-            self.scheduler.step()
+            for epoch in range(self.config.epochs):
+                train_metrics = self._train_epoch(epoch, progress)
 
-            if current_loss < self.best_loss:
-                self.patience_counter = 0
-                self.best_loss = current_loss
-                log_message += f"\nNew best loss: {self.best_loss:.4f}. Saving model..."
-                # `save_state` handles unwrapping the model and saving from the main process only.
-                self.accelerator.save_state(self.best_model_path)
-            else:
-                self.patience_counter += 1
-                if self.patience_counter >= self.early_stopping_patience:
-                    log_message += "\nEarly stopping triggered."
-                    self.accelerator.print(log_message)
+                eval_metrics = {}
+                if self.val_loader:
+                    eval_metrics.update(self._evaluate("val", progress))
+                if self.test_loader:
+                    eval_metrics.update(self._evaluate("test", progress))
+
+                self.scheduler.step()
+                log_metrics = {**train_metrics, **eval_metrics, "epoch": epoch + 1}
+
+                if self._log_and_check_early_stopping(log_metrics):
                     break
 
-            if self.config.report_to is not None:
-                self.accelerator.log(log_metrics, step=epoch)
-            self.accelerator.print(log_message)
+                if progress:
+                    progress.update(epochs_task, advance=1)
+        finally:
+            if progress:
+                progress.stop()
 
-        self.accelerator.print(
-            f"\n\nTraining completed. Best validation loss: {self.best_loss:.4f}"
-        )
-        self.accelerator.print(f"Best model state saved at: {self.best_model_path}")
+        if self.console:
+            best_split = "validation" if self.val_loader else "training"
+            self.console.print(
+                Panel(
+                    f"Best {best_split} {self.config.metric_for_best_model}: {self.best_metric:.4f}\n"
+                    f"Best model state saved at: {self.best_model_path}",
+                    title="[bold blue]Training Completed[/bold blue]",
+                    expand=False,
+                )
+            )
 
         if self.config.report_to is not None:
             self.accelerator.end_training()
 
         return self.best_model_path
 
-    def _train_epoch(self, epoch: int) -> dict[str, float]:
+    def _train_epoch(self, epoch: int, progress: Progress | None) -> dict[str, float]:
         """Runs a single training epoch."""
         self.model.train()
         total_loss = 0.0
-        all_preds = []
-        all_targets = []
-        progress_bar = tqdm(
-            self.train_loader,
-            desc=f"Epoch {epoch + 1}/{self.config.epochs}",
-            disable=not self.accelerator.is_main_process,
-        )
+        all_preds, all_targets = [], []
 
-        for i, inputs in enumerate(progress_bar):
+        task_id = None
+        if progress:
+            task_id = progress.add_task(
+                f"[blue]Train Epoch {epoch + 1}", total=len(self.train_loader)
+            )
+
+        for inputs in self.train_loader:
             targets = inputs.y
-            if self.use_torch_compile:
-                # This tells the compiler that a new iteration is starting,
-                # preventing it from overwriting memory needed by the previous step's backward pass.
-                torch.compiler.cudagraph_mark_step_begin()
-
-            # Data is automatically moved to the correct device by the prepared DataLoader
             with self.accelerator.accumulate(self.model):
                 logits = self.model(inputs)
                 loss = self.criterion(logits.squeeze(), targets)
-
                 self.accelerator.backward(loss)
                 self.optimizer.step()
                 self.optimizer.zero_grad()
 
-            # Gather loss across all processes for accurate logging
             avg_loss = self.accelerator.gather(loss.detach()).mean()
             total_loss += avg_loss.item()
-
             all_preds.append(logits.detach())
             all_targets.append(targets.detach())
 
-            if self.accelerator.is_main_process:
-                progress_bar.set_postfix(
-                    loss=f"{avg_loss.item():.4f}",
-                    lr=f"{self.scheduler.get_last_lr()[0]:.1e}",
+            if progress:
+                progress.update(
+                    task_id,
+                    advance=1,
+                    description=f"[blue]Train Epoch {epoch + 1} | Loss: {avg_loss.item():.4f}",
                 )
 
-            if self.config.report_to is not None and i % self.config.logging_steps == 0:
-                self.accelerator.log({"train/step_loss": avg_loss.item()})
+        if progress:
+            progress.remove_task(task_id)
 
-        # Gather predictions and targets from all processes
         gathered_preds = self.accelerator.gather_for_metrics(torch.cat(all_preds))
         gathered_targets = self.accelerator.gather_for_metrics(torch.cat(all_targets))
 
-        # Compute metrics on the gathered tensors
-        metrics = compute_metrics(gathered_preds, gathered_targets)
-        metrics["loss"] = total_loss / len(self.train_loader)
+        metrics = compute_metrics(gathered_preds, gathered_targets, prefix="train/")
+        metrics["train/loss"] = total_loss / len(self.train_loader)
         return {k: v.item() if hasattr(v, "item") else v for k, v in metrics.items()}
 
-    def _evaluate(self) -> dict[str, float]:
-        """
-        Runs a single evaluation epoch, gathering metrics from all processes for accuracy.
-        """
+    def _evaluate(
+        self, state: Literal["val", "test"], progress: Progress | None
+    ) -> dict[str, float]:
+        """Runs a single evaluation epoch."""
         self.model.eval()
-        total_loss = 0.0
-        all_preds = []
-        all_targets = []
+        loader = self.val_loader if state == "val" else self.test_loader
+        if not loader:
+            return {}
 
-        progress_bar = tqdm(
-            self.val_loader,
-            desc="Evaluating",
-            disable=not self.accelerator.is_main_process,
-        )
+        total_loss = 0.0
+        all_preds, all_targets = [], []
+
+        task_id = None
+        if progress:
+            task_id = progress.add_task(
+                f"[purple]Evaluating ({state})", total=len(loader)
+            )
 
         with torch.no_grad():
-            for inputs in progress_bar:
+            for inputs in loader:
                 targets = inputs.y
                 logits = self.model(inputs)
                 loss = self.criterion(logits.squeeze(), targets)
 
                 avg_loss = self.accelerator.gather(loss.detach()).mean()
                 total_loss += avg_loss.item()
-
                 all_preds.append(logits.detach())
                 all_targets.append(targets.detach())
 
-                if self.accelerator.is_main_process:
-                    progress_bar.set_postfix(loss=f"{avg_loss.item():.4f}")
+                if progress:
+                    progress.update(
+                        task_id,
+                        advance=1,
+                        description=f"[purple]Evaluating ({state}) | Loss: {avg_loss.item():.4f}",
+                    )
 
-        # Gather predictions and targets from all processes
+        if progress:
+            progress.remove_task(task_id)
+
         gathered_preds = self.accelerator.gather_for_metrics(torch.cat(all_preds))
         gathered_targets = self.accelerator.gather_for_metrics(torch.cat(all_targets))
 
-        # Compute metrics on the gathered tensors
-        metrics = compute_metrics(gathered_preds, gathered_targets)
-        metrics["loss"] = total_loss / len(self.val_loader)
+        prefix = f"{state}/"
+        metrics = compute_metrics(gathered_preds, gathered_targets, prefix=prefix)
+        metrics[f"{prefix}loss"] = total_loss / len(loader)
         return {k: v.item() if hasattr(v, "item") else v for k, v in metrics.items()}
+
+    def _log_and_check_early_stopping(self, metrics: dict) -> bool:
+        """Logs metrics using rich and checks for early stopping criteria."""
+        monitor_metric_key = f"{'val' if self.val_loader else 'train'}/{self.config.metric_for_best_model}"
+        current_metric = metrics[monitor_metric_key]
+
+        improved = (
+            self.config.greater_is_better and current_metric > self.best_metric
+        ) or (not self.config.greater_is_better and current_metric < self.best_metric)
+
+        if self.console:
+            table = Table(title=f"Epoch {metrics['epoch']}/{self.config.epochs}")
+            table.add_column("Split", style="cyan")
+            table.add_column("Loss", style="magenta")
+            table.add_column("Score", style="green")
+            table.add_column("NRMSE", style="yellow")
+            table.add_column("R2", style="red")
+
+            for split in ["train", "val", "test"]:
+                if f"{split}/loss" in metrics:
+                    table.add_row(
+                        split.capitalize(),
+                        f"{metrics[f'{split}/loss']:.4f}",
+                        f"{metrics[f'{split}/score']:.4f}",
+                        f"{metrics[f'{split}/nrmse']:.4f}",
+                        f"{metrics[f'{split}/r2']:.4f}",
+                    )
+            self.console.print(table)
+
+        if improved:
+            self.patience_counter = 0
+            self.best_metric = current_metric
+            self.accelerator.save_state(self.best_model_path)
+            if self.console:
+                self.console.print(
+                    Panel(
+                        f"New best {self.config.metric_for_best_model}: {self.best_metric:.4f}. Saving model.",
+                        title="[bold green]Improvement[/bold green]",
+                        expand=False,
+                    )
+                )
+        else:
+            self.patience_counter += 1
+            if self.patience_counter >= self.early_stopping_patience:
+                if self.console:
+                    self.console.print(
+                        Panel(
+                            "[bold red]Early stopping triggered.[/bold red]",
+                            expand=False,
+                        )
+                    )
+                return True
+
+        if self.config.report_to is not None:
+            self.accelerator.log(metrics, step=metrics["epoch"])
+
+        return False

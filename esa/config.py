@@ -16,17 +16,17 @@ class EmbeddingConfig(BaseModel):
 
     node_dim: int = 61
     edge_dim: int = 13
-    hidden_dims: list[int] = Field(default_factory=lambda: [128])
+    hidden_dims: list[int] = Field(default_factory=lambda: [512])
 
 
 class ESAConfig(BaseModel):
     """Configuration for the Edge-Set Attention block."""
 
     num_heads: int = 4
-    mlp_hidden_dims: list[int] = Field(default_factory=lambda: [128])
-    num_seeds: int = 32
+    mlp_hidden_dims: list[int] = Field(default_factory=lambda: [256])
+    num_seeds: int = 64
     blocks: Literal["M", "P", "S"] = (
-        "MSP"  # Using str for flexibility, can be validated with pydantic
+        "P"  # Using str for flexibility, can be validated with pydantic
     )
 
 
@@ -77,11 +77,13 @@ class TrainingConfig(BaseModel):
 
     # --- Logging ---
     report_to: str = "trackio"
+    project_name: str = "ESA"
     logging_steps: int = 10
 
     # --- Saving ---
     output_dir: Path = Path("outputs")
-
+    metric_for_best_model: str = "score"
+    greater_is_better: bool = True
 
 class AppConfig(BaseModel):
     """Base configuration for the project."""
