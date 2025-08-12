@@ -100,7 +100,7 @@ class MoleculePropertyPredictor(nn.Module):
         max_num_edges = max(1, int(edge_counts.max()) if len(edge_counts) > 0 else 0)
 
         data.x = data.x.float()
-        
+
         if self.lap_encoder is not None:
             lap_pos_enc = self.lap_encoder(data.EigVals, data.EigVecs)
             data.x = torch.cat((data.x, lap_pos_enc), 1)

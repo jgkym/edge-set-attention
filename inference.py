@@ -11,8 +11,10 @@ from esa.data_loading import load_molecule_dataset
 from esa.model import MoleculePropertyPredictor
 from esa.utils import set_seed
 
+
 def pIC50_to_IC50(pIC50):
     return 10 ** (9 - pIC50)
+
 
 def inference():
     """
@@ -65,7 +67,7 @@ def inference():
     # BEST PRACTICE: Load state_dict before preparing the model
     best_model_path = config.training.output_dir / "best_model_state"
     accelerator.print(f"Loading model from {best_model_path}...")
-    model = MoleculePropertyPredictor(config.model)
+    model = MoleculePropertyPredictor(config.model, pe_types=config.data.pe_types)
 
     # --- Prepare for acceleration ---
     # This will move the model to the correct device and compile it with TorchDynamo
@@ -99,16 +101,11 @@ def inference():
 
         # Now you can process `final_predictions` and save to a CSV
         # e.g., create_submission_file(final_predictions, config.submission_path)
-        submission = pd.read_csv(config.data.data_dir / "sample_submission.csv")
-        
-        y_scaler = joblib.load(config.data.data_dir / "y_scaler.joblib")
+        ic50s = [pIC50_to_IC50(p).item() for p in final_predictions.numpy()]
 
-        inverse_scaled = y_scaler.inverse_transform(final_predictions.numpy().reshape(-1, 1))
-        ic50s = [pIC50_to_IC50(p).item() for p in inverse_scaled]
-        
+        submission = pd.read_csv(config.data.data_dir / "sample_submission.csv")
         submission["ASK1_IC50_nM"] = ic50s
         submission.to_csv(config.training.output_dir / "output.csv", index=False)
-        
 
     accelerator.wait_for_everyone()
     print("Inference completed.")

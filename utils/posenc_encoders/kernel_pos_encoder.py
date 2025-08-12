@@ -3,6 +3,7 @@ import torch.nn as nn
 
 # Taken from https://github.com/davidbuterez/st-no-gnn-general-refactor/blob/540011477c606cee4436bdba0a9c30cd9f4fe586/code/Exphormer/graphgps/encoder/
 
+
 class KernelPENodeEncoder(torch.nn.Module):
     """Configurable kernel-based Positional Encoding node encoder.
 
@@ -18,14 +19,16 @@ class KernelPENodeEncoder(torch.nn.Module):
         dim_emb: Size of final node embedding
     """
 
-    kernel_type = 'RWSE'  # Instantiated type of the KernelPE, e.g. RWSE
+    kernel_type = "RWSE"  # Instantiated type of the KernelPE, e.g. RWSE
 
     def __init__(self):
         super().__init__()
         if self.kernel_type is None:
-            raise ValueError(f"{self.__class__.__name__} has to be "
-                             f"preconfigured by setting 'kernel_type' class"
-                             f"variable before calling the constructor.")
+            raise ValueError(
+                f"{self.__class__.__name__} has to be "
+                f"preconfigured by setting 'kernel_type' class"
+                f"variable before calling the constructor."
+            )
 
         dim_pe = 24  # Size of the kernel-based PE embedding
         num_rw_steps = 20
@@ -34,12 +37,12 @@ class KernelPENodeEncoder(torch.nn.Module):
         norm_type = "batchnorm"  # Raw PE normalization layer type
         self.pass_as_var = True  # Pass PE also as a separate variable
 
-        if norm_type == 'batchnorm':
+        if norm_type == "batchnorm":
             self.raw_norm = nn.BatchNorm1d(num_rw_steps)
         else:
             self.raw_norm = None
 
-        if model_type == 'mlp':
+        if model_type == "mlp":
             layers = []
             if n_layers == 1:
                 layers.append(nn.Linear(num_rw_steps, dim_pe))
@@ -53,11 +56,13 @@ class KernelPENodeEncoder(torch.nn.Module):
                 layers.append(nn.Linear(2 * dim_pe, dim_pe))
                 layers.append(nn.ReLU())
             self.pe_encoder = nn.Sequential(*layers)
-        elif model_type == 'linear':
+        elif model_type == "linear":
             self.pe_encoder = nn.Linear(num_rw_steps, dim_pe)
         else:
-            raise ValueError(f"{self.__class__.__name__}: Does not support "
-                             f"'{model_type}' encoder model.")
+            raise ValueError(
+                f"{self.__class__.__name__}: Does not support "
+                f"'{model_type}' encoder model."
+            )
 
     def forward(self, pos_enc):
         # pestat_var = f"pestat_{self.kernel_type}"

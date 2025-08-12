@@ -194,8 +194,8 @@ class Trainer:
             if self.config.report_to is not None and i % self.config.logging_steps == 0:
                 self.accelerator.log({"train/step_loss": avg_loss.item()})
 
-        # Gather predictions and targets from all processes        
-        gathered_preds = self.accelerator.gather_for_metrics(torch.cat(all_preds))        
+        # Gather predictions and targets from all processes
+        gathered_preds = self.accelerator.gather_for_metrics(torch.cat(all_preds))
         gathered_targets = self.accelerator.gather_for_metrics(torch.cat(all_targets))
 
         # Compute metrics on the gathered tensors

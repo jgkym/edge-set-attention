@@ -1,4 +1,5 @@
 from pathlib import Path
+
 import numpy as np
 import torch
 import torch_geometric.transforms as T
@@ -29,26 +30,6 @@ def get_max_node_edge_global(dataset):
             max_node_global = data.max_node
 
     return max_edge_global, max_node_global
-
-
-def scale_y_for_regression_task(train_data_list, num_tasks=1):
-    y_train = np.array(
-        [data.y.squeeze() for data in train_data_list], dtype=float
-    ).reshape(-1, num_tasks)
-
-    scaler = QuantileTransformer(output_distribution='normal')
-    scaler = scaler.fit(y_train)
-
-    return scaler
-
-
-def apply_scaler_to_dataset(dataset, scaler):
-    for data in tqdm(dataset):
-        data.y = torch.from_numpy(
-            scaler.transform(data.y.numpy().reshape(1, -1))
-        ).float()
-
-    return dataset
 
 
 def load_molecule_dataset(
@@ -121,11 +102,6 @@ def load_molecule_dataset(
     print(f"Training set size: {len(train_dataset)}")
     print(f"Validation set size: {len(val_dataset)}")
 
-    y_scaler = scale_y_for_regression_task(train_dataset)
-
-    train = apply_scaler_to_dataset(train_dataset, y_scaler)
-    val = apply_scaler_to_dataset(val_dataset, y_scaler)
-
     print("Finished loading data!")
 
-    return train, val, y_scaler, node_dim, edge_dim
+    return train_dataset, val_dataset, node_dim, edge_dim

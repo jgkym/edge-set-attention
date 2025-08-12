@@ -140,7 +140,9 @@ class AddMaxNodeGlobal(T.BaseTransform):
 class AddGlobalFeatures(T.BaseTransform):
     def forward(self, data):
         if data is not None:
-            data.global_feat = torch.tensor([data.max_node, data.max_edge], dtype=torch.float)
+            data.global_feat = torch.tensor(
+                [data.max_node, data.max_edge], dtype=torch.float
+            )
         return data
 
 

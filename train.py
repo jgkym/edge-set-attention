@@ -1,5 +1,3 @@
-import joblib
-
 from torch_geometric.loader import DataLoader
 
 from esa.config import get_config
@@ -7,6 +5,7 @@ from esa.data_loading import load_molecule_dataset
 from esa.model import MoleculePropertyPredictor
 from esa.trainer import Trainer
 from esa.utils import set_seed
+
 
 def main():
     # --- Load configuration ---
@@ -16,7 +15,7 @@ def main():
     set_seed(config.random_seed)
 
     # --- Load data ---
-    train, val, y_scaler, node_dim, edge_dim  = load_molecule_dataset(
+    train, val, node_dim, edge_dim = load_molecule_dataset(
         data_dir=config.data.data_dir,
         filename=config.data.filename,
         smiles_col=config.data.smiles_col,
@@ -26,8 +25,6 @@ def main():
         pe_types=config.data.pe_types,
         train_ratio=config.data.train_ratio,
     )
-
-    joblib.dump(y_scaler, config.data.data_dir / "y_scaler.joblib")
 
     # --- Create data loaders ---
     train_loader = DataLoader(

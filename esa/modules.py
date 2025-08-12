@@ -147,14 +147,14 @@ class AttentionBlock(nn.Module):
         attn_output = self.proj_O(attn_output)
 
         # Residual connection
-        x = x + F.dropout(attn_output, p=self.dropout, training=self.training)
+        x = x + F.mish(attn_output)
 
         # --- Second Sub-layer: Feed-Forward Network ---
         x_norm2 = self.norm2(x)
         mlp_output = self.mlp(x_norm2)
 
         # Residual connection
-        out = x + F.dropout(mlp_output, p=self.dropout, training=self.training)
+        out = x + F.mish(mlp_output)
         return out
 
 
