@@ -71,10 +71,15 @@ class MoleculePropertyPredictor(nn.Module):
         )
 
         # The regression head processes the output of the ESA module.
-        regression_in_features = esa_config.num_seeds * esa_dim
-        self.regression_head = nn.Sequential(
-            nn.Flatten(), nn.Linear(regression_in_features, 1)
-        )
+        self.use_pooling = "P" in esa_config.blocks
+        if self.use_pooling:
+            regression_in_features = esa_config.num_seeds * esa_dim
+            self.regression_head = nn.Sequential(
+                nn.Flatten(), nn.Linear(regression_in_features, 1)
+            )
+        else:
+            # If no pooling block is used, apply global average pooling before the regressor.
+            self.regression_head = nn.Linear(esa_dim, 1)
 
     def forward(self, data: Data) -> torch.Tensor:
         """
@@ -86,18 +91,7 @@ class MoleculePropertyPredictor(nn.Module):
         Returns:
             A tensor of predictions.
         """
-        # Determine the maximum number of edges in the batch, which is required
-        # for creating a dense tensor from the sparse graph data.
-        edge_batch_index = data.batch.index_select(0, data.edge_index[0])
-        edge_counts = torch.bincount(edge_batch_index)
-
-        # Pad edge_counts to ensure it matches the batch size, even if some graphs have no edges.
-        num_graphs = data.num_graphs
-        if edge_counts.numel() < num_graphs:
-            padding = edge_counts.new_zeros(num_graphs - edge_counts.numel())
-            edge_counts = torch.cat([edge_counts, padding], dim=0)
-
-        max_num_edges = max(1, int(edge_counts.max()) if len(edge_counts) > 0 else 0)
+        max_num_edges = data.max_edge_global.max().item()
 
         data.x = data.x.float()
 
@@ -120,5 +114,7 @@ class MoleculePropertyPredictor(nn.Module):
         activations = self.esa(edge_set, adj_mask)
 
         # 4. Make the final prediction
+        if not self.use_pooling:
+            activations = activations.mean(dim=1)
         predictions = self.regression_head(activations)
         return predictions.squeeze()

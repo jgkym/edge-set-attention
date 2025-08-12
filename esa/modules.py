@@ -96,7 +96,8 @@ class AttentionBlock(nn.Module):
         self.proj_V = nn.Linear(dim, dim, bias=False)
         self.proj_O = nn.Linear(dim, dim, bias=False)
 
-        self.mlp = MLP(dim, mlp_hidden_dims, activation_fn, dropout)
+        final_mlp_dims = mlp_hidden_dims + [dim]
+        self.mlp = MLP(dim, final_mlp_dims, activation_fn, dropout)
         self._init_weights()
 
     def _init_weights(self) -> None:
@@ -174,6 +175,7 @@ class PoolingByMultiHeadAttention(nn.Module):
     ):
         super().__init__()
         self.S = nn.Parameter(torch.randn(1, num_seeds, dim))
+        xavier_normal_(self.S)
         self.attention = AttentionBlock(
             dim, num_heads, mlp_hidden_dims, activation_fn, dropout
         )
@@ -290,6 +292,7 @@ class EdgeSetAttention(nn.Module):
         for block, block_type in zip(self.blocks, self.block_types):
             if isinstance(block, PoolingByMultiHeadAttention):
                 x = block(x)  # Pooling does not use the adjacency mask
+                # adj_mask = None  # Adjacency mask is invalidated after pooling
             elif isinstance(block, AttentionBlock):
                 # Masked blocks ('M') receive the mask, Self-attention blocks ('S') do not.
                 mask = adj_mask if block_type == "M" else None
