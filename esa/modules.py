@@ -19,6 +19,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.nn.init import xavier_normal_
 from torch_geometric.data import Data
 from torch_geometric.utils import to_dense_batch
@@ -96,8 +97,7 @@ class AttentionBlock(nn.Module):
         self.proj_V = nn.Linear(dim, dim, bias=False)
         self.proj_O = nn.Linear(dim, dim, bias=False)
 
-        final_mlp_dims = mlp_hidden_dims + [dim]
-        self.mlp = MLP(dim, final_mlp_dims, activation_fn, dropout)
+        self.mlp = MLP(dim, mlp_hidden_dims, activation_fn, dropout)
         self._init_weights()
 
     def _init_weights(self) -> None:
@@ -141,9 +141,14 @@ class AttentionBlock(nn.Module):
                 -1, self.num_heads, -1, -1
             )
 
-        attn_output = F.scaled_dot_product_attention(
-            Q, K, V, attn_mask=mask, dropout_p=self.dropout if self.training else 0.0
-        )
+        with sdpa_kernel(SDPBackend.EFFICIENT_ATTENTION):
+            attn_output = F.scaled_dot_product_attention(
+                Q,
+                K,
+                V,
+                attn_mask=mask,
+                dropout_p=self.dropout if self.training else 0.0,
+            )
         attn_output = rearrange(attn_output, "B H L D -> B L (H D)")
         attn_output = self.proj_O(attn_output)
 
