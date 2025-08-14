@@ -1,15 +1,7 @@
 from pathlib import Path
-from typing import Literal, Type
+from typing import Literal
 
-import torch.nn as nn
 from pydantic import BaseModel, Field
-
-# A map to resolve activation function from a string representation
-ACTIVATION_FUNCTIONS = {
-    "ReLU": nn.ReLU,
-    "SiLU": nn.SiLU,
-    "GELU": nn.GELU,
-}
 
 
 class EmbeddingConfig(BaseModel):
@@ -17,36 +9,27 @@ class EmbeddingConfig(BaseModel):
 
     node_dim: int = 61
     edge_dim: int = 13
-    hidden_dims: list[int] = Field(default_factory=lambda: [128])
+    mlp_hidden_dim: int = 128
+    embedding_dim: int = 128
 
 
 class ESAConfig(BaseModel):
     """Configuration for the Edge-Set Attention block."""
 
     num_heads: int = 4
-    mlp_hidden_dims: list[int] = Field(default_factory=lambda: [128])
+    mlp_hidden_dim: int = 128
     num_seeds: int = 32
     blocks: Literal["M", "P", "S"] = (
-        "MMP"  # Using str for flexibility, can be validated with pydantic
+        "MMMSPS"  # Using str for flexibility, can be validated with pydantic
     )
 
 
 class ModelConfig(BaseModel):
     """Configuration for the model."""
 
-    activation_fn_name: str = "ReLU"
-    dropout: float | None = 0.1
+    dropout: float = 0.4
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     esa: ESAConfig = Field(default_factory=ESAConfig)
-
-    def get_activation_fn(self) -> Type[nn.Module]:
-        """Returns the activation function class from its name."""
-        try:
-            return ACTIVATION_FUNCTIONS[self.activation_fn_name]
-        except KeyError:
-            raise ValueError(
-                f"Unsupported activation function: {self.activation_fn_name}"
-            )
 
 
 class DataConfig(BaseModel):

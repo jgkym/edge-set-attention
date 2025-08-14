@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-from einops import rearrange
 from torch_geometric.data import Data
 
 from esa.modules import DenseEmbedding, EdgeSetAttention
@@ -43,7 +42,7 @@ class MoleculePropertyPredictor(nn.Module):
         esa_config = config.esa
 
         # The dimension for the ESA module is the output dim of the embedding layer
-        esa_dim = embedding_config.hidden_dims[-1]
+        esa_dim = embedding_config.embedding_dim
 
         if "RWSE" in pe_types:
             self.rwse_encoder = KernelPENodeEncoder()
@@ -55,17 +54,16 @@ class MoleculePropertyPredictor(nn.Module):
         self.embed = DenseEmbedding(
             node_dim=embedding_config.node_dim,
             edge_dim=embedding_config.edge_dim,
-            hidden_dims=embedding_config.hidden_dims,
-            activation_fn=config.get_activation_fn(),
+            mlp_hidden_dim=embedding_config.mlp_hidden_dim,
+            embedding_dim=embedding_config.embedding_dim,
             dropout=config.dropout,
         )
 
         self.esa = EdgeSetAttention(
             dim=esa_dim,
+            mlp_hidden_dim=esa_config.mlp_hidden_dim,
             num_heads=esa_config.num_heads,
-            mlp_hidden_dims=esa_config.mlp_hidden_dims,
             num_seeds=esa_config.num_seeds,
-            activation_fn=config.get_activation_fn(),
             dropout=config.dropout,
             blocks=esa_config.blocks,
         )

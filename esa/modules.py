@@ -33,24 +33,18 @@ class MLP(nn.Module):
     def __init__(
         self,
         input_dim: int,
-        hidden_dims: list[int],
-        activation_fn: nn.Module = nn.SiLU,
-        dropout: float | None = 0.5,
+        hidden_dim: int,
+        output_dim: int,
+        dropout: float = 0.0,
+        bias: bool = False,
     ):
         super().__init__()
-        if not isinstance(hidden_dims, list):
-            raise TypeError("hidden_dims must be a list of integers.")
-
         layers = []
-        current_dim = input_dim
-        for h_dim in hidden_dims:
-            layers.append(nn.Linear(current_dim, h_dim))
-            layers.append(activation_fn())
-            if dropout is not None:
-                layers.append(nn.Dropout(p=dropout))
-            current_dim = h_dim
+        layers.append(nn.Linear(input_dim, output_dim, bias=bias))
+        layers.append(nn.GELU())
         self.network = nn.Sequential(*layers)
         self._init_weights(self.network)
+        self.dropout_p = dropout
 
     def _init_weights(self, network):
         for module in network:
@@ -59,7 +53,56 @@ class MLP(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Applies the MLP to the input tensor."""
-        return self.network(x)
+        return F.dropout(self.network(x), p=self.dropout_p, training=self.training)
+
+
+class SwiGLUFFN(nn.Module):
+    """
+    Swish-Gated Linear Unit Feed-Forward Network.
+
+    This module implements the SwiGLU activation function within a feed-forward
+    network block, as described in the paper "GLU Variants Improve Transformer"
+    by Noam Shazeer. It's designed for efficiency and flexibility.
+
+    Reference: https://arxiv.org/abs/2002.05202
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        output_dim: int,
+        dropout: float = 0.0,
+        bias: bool = False,
+    ):
+        super().__init__()
+
+        # Projects from `input_dim` to `2 * hidden_dim` to compute gate and value in one go
+        self.wv = nn.Linear(input_dim, 2 * hidden_dim, bias=bias)
+
+        # Projects from `hidden_dim` back down to `output_dim`
+        self.w1 = nn.Linear(hidden_dim, output_dim, bias=bias)
+
+        self.act = nn.SiLU()  # Swish activation
+        self.dropout_p = dropout
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Defines the forward pass.
+
+        The operation is: Dropout(w3(SiLU(w1(x)) * w2(x)))
+        """
+        # Project and then split into two tensors for gate and value
+        gate, value = self.wv(x).chunk(2, dim=-1)
+
+        # Apply the SwiGLU activation
+        fused_activation = self.act(gate) * value
+
+        # Apply the final projection and dropout
+        output = self.w1(fused_activation)
+        output = F.dropout(output, p=self.dropout_p, training=self.training)
+
+        return output
 
 
 class AttentionBlock(nn.Module):
@@ -77,17 +120,16 @@ class AttentionBlock(nn.Module):
     def __init__(
         self,
         dim: int,
+        mlp_hidden_dim: int,
         num_heads: int,
-        mlp_hidden_dims: list[int],
-        activation_fn: nn.Module = nn.SiLU,
-        dropout: float | None = 0.5,
+        dropout: float = 0.5,
     ):
         super().__init__()
         if dim % num_heads != 0:
             raise ValueError("dim must be divisible by num_heads.")
 
         self.num_heads = num_heads
-        self.dropout = dropout if dropout is not None else 0.0
+        self.dropout_p = dropout
 
         self.norm1 = nn.LayerNorm(dim)
         self.norm2 = nn.LayerNorm(dim)
@@ -97,7 +139,7 @@ class AttentionBlock(nn.Module):
         self.proj_V = nn.Linear(dim, dim, bias=False)
         self.proj_O = nn.Linear(dim, dim, bias=False)
 
-        self.mlp = MLP(dim, mlp_hidden_dims, activation_fn, dropout)
+        self.mlp = SwiGLUFFN(dim, mlp_hidden_dim, dim, dropout)
         self._init_weights()
 
     def _init_weights(self) -> None:
@@ -126,6 +168,7 @@ class AttentionBlock(nn.Module):
         """
         # --- First Sub-layer: Multi-Head Attention ---
         x_norm = self.norm1(x)
+        shortcut1 = x_norm
         context_norm = self.norm1(context) if context is not None else x_norm
 
         Q = self.proj_Q(x_norm)
@@ -147,20 +190,21 @@ class AttentionBlock(nn.Module):
                 K,
                 V,
                 attn_mask=mask,
-                dropout_p=self.dropout if self.training else 0.0,
+                dropout_p=self.dropout_p if self.training else 0.0,
             )
         attn_output = rearrange(attn_output, "B H L D -> B L (H D)")
         attn_output = self.proj_O(attn_output)
 
         # Residual connection
-        x = x + F.mish(attn_output)
+        x = shortcut1 + F.dropout(attn_output, p=self.dropout_p, training=self.training)
+        shortcut2 = x
 
         # --- Second Sub-layer: Feed-Forward Network ---
         x_norm2 = self.norm2(x)
         mlp_output = self.mlp(x_norm2)
 
         # Residual connection
-        out = x + F.mish(mlp_output)
+        out = shortcut2 + F.dropout(mlp_output, p=self.dropout_p, training=self.training)
         return out
 
 
@@ -172,18 +216,15 @@ class PoolingByMultiHeadAttention(nn.Module):
     def __init__(
         self,
         dim: int,
+        mlp_hidden_dim: int,
         num_heads: int,
         num_seeds: int,
-        mlp_hidden_dims: list[int],
-        activation_fn: nn.Module = nn.SiLU,
-        dropout: float | None = 0.1,
+        dropout: float = 0.1,
     ):
         super().__init__()
         self.S = nn.Parameter(torch.randn(1, num_seeds, dim))
         xavier_normal_(self.S)
-        self.attention = AttentionBlock(
-            dim, num_heads, mlp_hidden_dims, activation_fn, dropout
-        )
+        self.attention = AttentionBlock(dim, num_heads, mlp_hidden_dim, dropout)
 
     def forward(
         self, x: torch.Tensor, mask: torch.Tensor | None = None
@@ -212,14 +253,20 @@ class DenseEmbedding(nn.Module):
         self,
         node_dim: int,
         edge_dim: int,
-        hidden_dims: list[int],
-        activation_fn: nn.Module = nn.SiLU,
-        dropout: float | None = 0.5,
+        mlp_hidden_dim: list[int],
+        embedding_dim: int,
+        dropout: float = 0.5,
     ):
         super().__init__()
         input_dim = edge_dim + 2 * node_dim
         self.layernorm = nn.LayerNorm(input_dim)
-        self.mlp = MLP(input_dim, hidden_dims, activation_fn, dropout)
+        self.mlp = SwiGLUFFN(input_dim, mlp_hidden_dim, embedding_dim, dropout)
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
 
     def forward(self, data: Data, max_num_edges: int):
         """
@@ -255,51 +302,65 @@ class EdgeSetAttention(nn.Module):
     """The main Edge Set Attention (ESA) model.
 
     This model processes sets of edges using a configurable sequence of
-    attention and pooling blocks.
+    attention and pooling blocks. It uses a standard residual connection
+    after each attention block, except for the final block in the sequence.
     """
 
     def __init__(
         self,
         dim: int,
+        mlp_hidden_dim: int,
         num_heads: int,
-        mlp_hidden_dims: list[int],
         num_seeds: int = 1,
-        activation_fn: nn.Module = nn.SiLU,
-        dropout: float | None = None,
+        dropout: float = 0.0,
         blocks: str = "MSMSP",
     ):
         super().__init__()
+        self.block_types = blocks
         self.blocks = nn.ModuleList()
 
-        for block_type in blocks:
+        for block_type in self.block_types:
             if block_type == "P":
                 block = PoolingByMultiHeadAttention(
-                    dim, num_heads, num_seeds, mlp_hidden_dims, activation_fn, dropout
+                    dim, mlp_hidden_dim, num_heads, num_seeds, dropout
                 )
             elif block_type in ["M", "S"]:
-                block = AttentionBlock(
-                    dim, num_heads, mlp_hidden_dims, activation_fn, dropout
-                )
+                block = AttentionBlock(dim, mlp_hidden_dim, num_heads, dropout)
             else:
                 raise ValueError(f"Unknown block type: {block_type}")
             self.blocks.append(block)
 
-        self.block_types = blocks
-
     def forward(
         self, x: torch.Tensor, adj_mask: torch.Tensor | None = None
     ) -> torch.Tensor:
-        """
+        """Processes the input tensor through the sequence of blocks.
+
         Args:
             x: The input edge set tensor. Shape: (batch_size, num_edges, dim).
-            adj_mask: The adjacency mask for the attention.
+            adj_mask: The adjacency mask for the attention mechanism.
+                      Shape: (batch_size, num_edges, num_edges).
+
+        Returns:
+            The processed tensor.
         """
-        for block, block_type in zip(self.blocks, self.block_types):
+        num_blocks = len(self.blocks)
+        for i, block in enumerate(self.blocks):
+            # Store the input for the residual connection
+            residual = x
+
+            # --- Block-specific processing ---
             if isinstance(block, PoolingByMultiHeadAttention):
-                x = block(x)  # Pooling does not use the adjacency mask
-                # adj_mask = None  # Adjacency mask is invalidated after pooling
+                x = block(x)
+                adj_mask = None
             elif isinstance(block, AttentionBlock):
-                # Masked blocks ('M') receive the mask, Self-attention blocks ('S') do not.
-                mask = adj_mask if block_type == "M" else None
+                # Apply mask only for 'M' type blocks
+                mask = adj_mask if self.block_types[i] == "M" else None
                 x = block(x, mask=mask)
+
+            # --- Residual Connection ---
+            # Applied to all blocks except the final one.
+            is_last_block = (i == num_blocks - 1)
+            if not is_last_block and isinstance(block, AttentionBlock):
+                x = x + residual
+
         return x
