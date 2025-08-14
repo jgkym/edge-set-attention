@@ -1,10 +1,10 @@
 train:
 	rm -rf data/processed
-	uv run python3 -m train
+	uv run accelerate launch train.py
 
 infer:
 	rm -rf data/processed
-	uv run python3 -m inference
+	uv run accelerate launch inference.py
 
 test:
 	uv run pytest
